@@ -40,7 +40,7 @@ def show_floating_window(text):
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     
-    # --- The Magic Trick for Rounded Corners ---
+    # --- Rounded Corners ---
     # We set the main window to a weird color, and tell Windows to make that color invisible!
     TRANSPARENT_COLOR = '#abcdef'
     root.configure(bg=TRANSPARENT_COLOR)
