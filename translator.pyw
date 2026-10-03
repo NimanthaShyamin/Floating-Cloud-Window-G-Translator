@@ -212,6 +212,32 @@ def main_app():
 
     keyboard.add_hotkey(hotkey, trigger, suppress=True)
 
+    # ===========================================================================
+    # WINDOWS TOUCHPAD GESTURE BUG FIX — GLOBAL HOTKEY REMAPPER
+    # ---------------------------------------------------------------------------
+    # Important: This application MUST be run with Administrator privileges for
+    # the global keyboard hooks to successfully bypass Windows UIPI restrictions
+    # and function properly.
+    #
+    # These hotkeys intercept dummy key combinations sent by the touchpad gesture
+    # workaround and silently remap them to the real target keystrokes, preventing
+    # the raw dummy keys from leaking through to other applications.
+    #
+    # ctrl+shift+f1  -->  alt+shift+esc   (e.g. cycle windows in reverse)
+    # ctrl+shift+f2  -->  alt+esc         (e.g. cycle windows forward)
+    # ===========================================================================
+
+    def _touchpad_fix_f1():
+        """Intercept ctrl+shift+f1 and silently send alt+shift+esc instead."""
+        keyboard.send('alt+shift+esc')
+
+    def _touchpad_fix_f2():
+        """Intercept ctrl+shift+f2 and silently send alt+esc instead."""
+        keyboard.send('alt+esc')
+
+    keyboard.add_hotkey('ctrl+shift+f1', _touchpad_fix_f1, suppress=True)
+    keyboard.add_hotkey('ctrl+shift+f2', _touchpad_fix_f2, suppress=True)
+
     root.after(100, process_queue)
     root.mainloop()
 
