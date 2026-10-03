@@ -13,9 +13,8 @@ SolidCompression=yes
 PrivilegesRequired=admin
 
 [Files]
-Source: "Z:\GitHub\Translate App\Floating-Cloud-Window-G-Translator\dist\Floating Sinhala Translator\Floating Sinhala Translator.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "Z:\GitHub\Translate App\Floating-Cloud-Window-G-Translator\dist\Floating Sinhala Translator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "Z:\GitHub\Translate App\Floating-Cloud-Window-G-Translator\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\Floating Sinhala Translator\Floating Sinhala Translator.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\Floating Sinhala Translator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FloatingSinhalaTranslator"; ValueData: """{app}\Floating Sinhala Translator.exe"""; Flags: uninsdeletevalue
