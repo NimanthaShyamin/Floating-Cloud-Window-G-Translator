@@ -422,16 +422,16 @@ def main_app():
             logging.debug("Could not register alternate hotkey ctrl+shift+t: %s", e)
 
     # ---------------------------------------------------------------------------
-    # WINDOWS TOUCHPAD GESTURE BUG FIX — NATIVE LOW-LEVEL KEYBOARD HOOK
+    # WINDOWS TOUCHPAD GESTURE — MEDIA KEYS WINDOW SWITCHER (UIPI-IMMUNE)
     # ---------------------------------------------------------------------------
-    # Intercepts touchpad gestures mapped to dummy keys and silently translates them:
-    # ctrl+shift+f1 (or ctrl+f1)  →  alt+shift+esc   (cycle windows in reverse)
-    # ctrl+shift+f2 (or ctrl+f2)  →  alt+esc         (cycle windows forward)
+    # Uses Windows Media Keys (Previous Track / Next Track) set in Windows Settings
+    # (Touchpad -> Advanced gestures -> Three-finger gestures):
+    #   Swipe left  -> Next track     (0xB0) -> cycle windows in reverse
+    #   Swipe right -> Previous track (0xB1) -> cycle windows forward
     #
-    # Windows Precision Touchpad synthesizes keystrokes with scan_code=0 / injected.
-    # A native WH_KEYBOARD_LL hook intercepts them at the Windows kernel message level,
-    # releases modifier keys, injects the window switch, and suppresses raw F1/F2 keys
-    # so they never leak into applications.
+    # Because Media Keys are session-wide system messages, Windows sends them globally
+    # without UIPI blocking, allowing gestures to work across ALL applications including
+    # Administrator apps (Task Manager, Event Viewer, Terminal, Regedit, etc.)
     # ---------------------------------------------------------------------------
     WH_KEYBOARD_LL = 13
     WM_KEYDOWN = 0x0100
@@ -440,19 +440,11 @@ def main_app():
     WM_SYSKEYUP = 0x0105
 
     VK_SHIFT = 0x10
-    VK_CONTROL = 0x11
     VK_MENU = 0x12       # Alt
     VK_ESCAPE = 0x1B
-    VK_F1 = 0x70
-    VK_F2 = 0x71
 
-    VK_LSHIFT = 0xA0
-    VK_RSHIFT = 0xA1
-    VK_LCONTROL = 0xA2
-    VK_RCONTROL = 0xA3
-
-    VK_MEDIA_NEXT_TRACK = 0xB0  # Next Track (176)
-    VK_MEDIA_PREV_TRACK = 0xB1  # Previous Track (177)
+    VK_MEDIA_NEXT_TRACK = 0xB0  # Next Track (176) — Swipe left
+    VK_MEDIA_PREV_TRACK = 0xB1  # Previous Track (177) — Swipe right
 
     KEYEVENTF_KEYUP = 0x0002
 
@@ -484,30 +476,23 @@ def main_app():
 
     def _send_alt_esc():
         user32 = ctypes.windll.user32
-        # Release Ctrl and Shift first
-        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        time.sleep(0.01)
-        # Send Alt + Esc
-        user32.keybd_event(VK_MENU, 0, 0, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_ESCAPE, 0, 0, MAGIC_EXTRA_INFO)
+        # Send Alt + Esc with real scan codes
+        user32.keybd_event(VK_MENU, 0x38, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0x01, 0, MAGIC_EXTRA_INFO)
         time.sleep(0.02)
-        user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0x01, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
 
     def _send_alt_shift_esc():
         user32 = ctypes.windll.user32
-        # Release Ctrl first
-        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        time.sleep(0.01)
-        # Send Alt + Shift + Esc
-        user32.keybd_event(VK_MENU, 0, 0, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_SHIFT, 0, 0, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_ESCAPE, 0, 0, MAGIC_EXTRA_INFO)
+        # Send Alt + Shift + Esc with real scan codes
+        user32.keybd_event(VK_MENU, 0x38, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_SHIFT, 0x2A, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0x01, 0, MAGIC_EXTRA_INFO)
         time.sleep(0.02)
-        user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
-        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0x01, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_SHIFT, 0x2A, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
 
     def _switch_window_forward():
         """Cycle windows forward (Alt + Esc), skipping desktop/taskbar so focus stays on apps."""
@@ -545,62 +530,35 @@ def main_app():
                 logging.error('Error sending alt+shift+esc: %s', e)
         threading.Thread(target=_send, daemon=True, name='touchpad-reverse').start()
 
-    _touchpad_ctrl_down = False
-    _touchpad_shift_down = False
     _last_touchpad_time = 0.0
 
     def _touchpad_lowlevel_proc(nCode, wParam, lParam):
-        nonlocal _touchpad_ctrl_down, _touchpad_shift_down, _last_touchpad_time
+        nonlocal _last_touchpad_time
         try:
             if nCode >= 0 and lParam:
                 extra = lParam.contents.dwExtraInfo
-                # Ignore keystrokes generated by our own app so they never corrupt modifier tracking
+                # Ignore keystrokes generated by our own app
                 if extra == MAGIC_EXTRA_INFO:
                     return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
 
                 vk = lParam.contents.vkCode
-                flags = lParam.contents.flags
-                scan = lParam.contents.scanCode
                 is_down = (wParam in (WM_KEYDOWN, WM_SYSKEYDOWN))
-                is_up = (wParam in (WM_KEYUP, WM_SYSKEYUP))
 
-                # Track modifier keys from user or touchpad
-                if vk in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
-                    _touchpad_ctrl_down = is_down
-                elif vk in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
-                    _touchpad_shift_down = is_down
-
-                user32 = ctypes.windll.user32
-                ctrl_active = _touchpad_ctrl_down or bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
-
-                # Touchpad injects keys with scanCode=0 or LLKHF_INJECTED (flags & 0x10)
-                is_injected = bool(flags & 0x10) or (scan == 0)
-
-                # Mode 1: Custom shortcut gestures (Ctrl+Shift+F1 / Ctrl+Shift+F2)
-                is_custom_f1 = (vk == VK_F1) and (ctrl_active or is_injected)
-                is_custom_f2 = (vk == VK_F2) and (ctrl_active or is_injected)
-
-                # Mode 2: System media gestures (Previous Track / Next Track)
-                # Windows sends media keys globally to the session without UIPI restrictions,
-                # allowing gestures to work EVEN when Administrator apps (Task Manager, Terminal) have focus!
-                is_media_f1 = (vk == VK_MEDIA_PREV_TRACK) and is_injected
-                is_media_f2 = (vk == VK_MEDIA_NEXT_TRACK) and is_injected
-
-                is_gesture_f1 = is_custom_f1 or is_media_f1
-                is_gesture_f2 = is_custom_f2 or is_media_f2
-
-                if is_gesture_f1 or is_gesture_f2:
+                # Touchpad Media Gestures:
+                # Swipe right -> Previous track (0xB1) -> cycle window forward
+                # Swipe left  -> Next track (0xB0)     -> cycle window in reverse
+                if vk in (VK_MEDIA_PREV_TRACK, VK_MEDIA_NEXT_TRACK):
                     if is_down:
                         now = time.time()
                         if now - _last_touchpad_time > 0.05:  # 50ms debounce
                             _last_touchpad_time = now
-                            if is_gesture_f1:
-                                logging.info("Touchpad Hook: Intercepted reverse gesture (vk=0x%X) -> triggering reverse window switch", vk)
-                                _switch_window_reverse()
-                            else:
-                                logging.info("Touchpad Hook: Intercepted forward gesture (vk=0x%X) -> triggering forward window switch", vk)
+                            if vk == VK_MEDIA_PREV_TRACK:
+                                logging.info("Touchpad Hook: Intercepted Previous Track (0xB1) [Swipe Right] -> Forward window switch")
                                 _switch_window_forward()
-                    # Suppress raw key completely so active app / media player never receives it
+                            else:
+                                logging.info("Touchpad Hook: Intercepted Next Track (0xB0) [Swipe Left] -> Reverse window switch")
+                                _switch_window_reverse()
+                    # Suppress media keys completely so media players / Windows do not skip songs
                     return 1
         except Exception as e:
             logging.error("Touchpad hook procedure exception: %s", e)
@@ -616,19 +574,11 @@ def main_app():
         ctypes.windll.user32.SetWindowsHookExW.restype = ctypes.wintypes.HHOOK
         _hook_handle = ctypes.windll.user32.SetWindowsHookExW(WH_KEYBOARD_LL, _c_hook_proc, 0, 0)
         if _hook_handle:
-            logging.info("Registered native Windows WH_KEYBOARD_LL hook for touchpad gestures (handle=%s)", _hook_handle)
+            logging.info("Registered native Windows WH_KEYBOARD_LL hook for touchpad media gestures (handle=%s)", _hook_handle)
         else:
             logging.error("Failed to install native hook: Windows error %s", ctypes.windll.kernel32.GetLastError())
     except Exception as e:
         logging.error("Exception setting up native touchpad hook: %s", e)
-
-    # Also register keyboard library hotkeys as fallback
-    try:
-        keyboard.add_hotkey('ctrl+shift+f1', _switch_window_reverse, suppress=True)
-        keyboard.add_hotkey('ctrl+shift+f2', _switch_window_forward, suppress=True)
-        logging.info("Registered fallback touchpad hotkeys ctrl+shift+f1 and ctrl+shift+f2")
-    except Exception as e:
-        logging.debug("Could not register fallback touchpad hotkeys: %s", e)
 
     root.after(100, process_queue)
     root.mainloop()
