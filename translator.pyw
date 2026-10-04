@@ -231,6 +231,7 @@ def main_app():
     q = queue.Queue()
     root = tk.Tk()
     root.withdraw()
+    _hook_handle = None
 
     # System Tray Icon
     def create_tray_image():
@@ -254,6 +255,13 @@ def main_app():
         quit_app(icon, item)
 
     def quit_app(icon, item):
+        nonlocal _hook_handle
+        if _hook_handle:
+            try:
+                ctypes.windll.user32.UnhookWindowsHookEx(_hook_handle)
+                logging.info('Unhooked native touchpad hook on exit')
+            except Exception as e:
+                logging.error('Error unhooking native touchpad hook: %s', e)
         icon.stop()
         root.destroy()
         sys.exit()
@@ -414,52 +422,213 @@ def main_app():
             logging.debug("Could not register alternate hotkey ctrl+shift+t: %s", e)
 
     # ---------------------------------------------------------------------------
-    # WINDOWS TOUCHPAD GESTURE BUG FIX — GLOBAL HOTKEY REMAPPER
+    # WINDOWS TOUCHPAD GESTURE BUG FIX — NATIVE LOW-LEVEL KEYBOARD HOOK
     # ---------------------------------------------------------------------------
     # Intercepts touchpad gestures mapped to dummy keys and silently translates them:
-    # ctrl+shift+f1  →  alt+shift+esc   (cycle windows in reverse)
-    # ctrl+shift+f2  →  alt+esc         (cycle windows forward)
+    # ctrl+shift+f1 (or ctrl+f1)  →  alt+shift+esc   (cycle windows in reverse)
+    # ctrl+shift+f2 (or ctrl+f2)  →  alt+esc         (cycle windows forward)
+    #
+    # Windows Precision Touchpad synthesizes keystrokes with scan_code=0 / injected.
+    # A native WH_KEYBOARD_LL hook intercepts them at the Windows kernel message level,
+    # releases modifier keys, injects the window switch, and suppresses raw F1/F2 keys
+    # so they never leak into applications.
     # ---------------------------------------------------------------------------
-    def _touchpad_fix_f1():
-        logging.info('Touchpad fix F1 triggered: remap ctrl+shift+f1 -> alt+shift+esc')
-        def _send():
-            time.sleep(0.02)
-            try:
-                user32 = ctypes.windll.user32
-                user32.keybd_event(0x12, 0, 0, 0)                # Alt DOWN
-                user32.keybd_event(0x10, 0, 0, 0)                # Shift DOWN
-                user32.keybd_event(0x1B, 0, 0, 0)                # Esc DOWN
-                time.sleep(0.02)
-                user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)  # Esc UP
-                user32.keybd_event(0x10, 0, KEYEVENTF_KEYUP, 0)  # Shift UP
-                user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)  # Alt UP
-                logging.debug('Sent alt+shift+esc successfully')
-            except Exception as e:
-                logging.error('Error sending alt+shift+esc: %s', e)
-        threading.Thread(target=_send, daemon=True, name='touchpad-fix-f1').start()
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    WM_SYSKEYDOWN = 0x0104
+    WM_SYSKEYUP = 0x0105
 
-    def _touchpad_fix_f2():
-        logging.info('Touchpad fix F2 triggered: remap ctrl+shift+f2 -> alt+esc')
+    VK_SHIFT = 0x10
+    VK_CONTROL = 0x11
+    VK_MENU = 0x12       # Alt
+    VK_ESCAPE = 0x1B
+    VK_F1 = 0x70
+    VK_F2 = 0x71
+
+    VK_LSHIFT = 0xA0
+    VK_RSHIFT = 0xA1
+    VK_LCONTROL = 0xA2
+    VK_RCONTROL = 0xA3
+
+    VK_MEDIA_NEXT_TRACK = 0xB0  # Next Track (176)
+    VK_MEDIA_PREV_TRACK = 0xB1  # Previous Track (177)
+
+    KEYEVENTF_KEYUP = 0x0002
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("vkCode", ctypes.wintypes.DWORD),
+            ("scanCode", ctypes.wintypes.DWORD),
+            ("flags", ctypes.wintypes.DWORD),
+            ("time", ctypes.wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    HOOKPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_longlong,
+        ctypes.c_int,
+        ctypes.wintypes.WPARAM,
+        ctypes.POINTER(KBDLLHOOKSTRUCT)
+    )
+
+    MAGIC_EXTRA_INFO = 0x54504144  # 'TPAD' signature to identify our injected keys
+
+    def _is_desktop_or_shell(hwnd):
+        if not hwnd or not ctypes.windll.user32.IsWindow(hwnd):
+            return True
+        class_buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(hwnd, class_buf, 256)
+        cls = class_buf.value
+        return cls in ('Progman', 'WorkerW', 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd')
+
+    def _send_alt_esc():
+        user32 = ctypes.windll.user32
+        # Release Ctrl and Shift first
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        time.sleep(0.01)
+        # Send Alt + Esc
+        user32.keybd_event(VK_MENU, 0, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0, 0, MAGIC_EXTRA_INFO)
+        time.sleep(0.02)
+        user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+
+    def _send_alt_shift_esc():
+        user32 = ctypes.windll.user32
+        # Release Ctrl first
+        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        time.sleep(0.01)
+        # Send Alt + Shift + Esc
+        user32.keybd_event(VK_MENU, 0, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_SHIFT, 0, 0, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_ESCAPE, 0, 0, MAGIC_EXTRA_INFO)
+        time.sleep(0.02)
+        user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+        user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, MAGIC_EXTRA_INFO)
+
+    def _switch_window_forward():
+        """Cycle windows forward (Alt + Esc), skipping desktop/taskbar so focus stays on apps."""
         def _send():
-            time.sleep(0.02)
             try:
-                user32 = ctypes.windll.user32
-                user32.keybd_event(0x12, 0, 0, 0)                # Alt DOWN
-                user32.keybd_event(0x1B, 0, 0, 0)                # Esc DOWN
-                time.sleep(0.02)
-                user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)  # Esc UP
-                user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)  # Alt UP
-                logging.debug('Sent alt+esc successfully')
+                _send_alt_esc()
+                time.sleep(0.03)
+                # If focus landed on Desktop/Taskbar, skip it immediately back to an application
+                for _ in range(2):
+                    fg = ctypes.windll.user32.GetForegroundWindow()
+                    if not _is_desktop_or_shell(fg):
+                        break
+                    time.sleep(0.02)
+                    _send_alt_esc()
+                logging.info('Touchpad: Cycled window forward (Alt+Esc)')
             except Exception as e:
                 logging.error('Error sending alt+esc: %s', e)
-        threading.Thread(target=_send, daemon=True, name='touchpad-fix-f2').start()
+        threading.Thread(target=_send, daemon=True, name='touchpad-forward').start()
 
+    def _switch_window_reverse():
+        """Cycle windows in reverse (Alt + Shift + Esc), skipping desktop/taskbar so focus stays on apps."""
+        def _send():
+            try:
+                _send_alt_shift_esc()
+                time.sleep(0.03)
+                # If focus landed on Desktop/Taskbar, skip it immediately back to an application
+                for _ in range(2):
+                    fg = ctypes.windll.user32.GetForegroundWindow()
+                    if not _is_desktop_or_shell(fg):
+                        break
+                    time.sleep(0.02)
+                    _send_alt_shift_esc()
+                logging.info('Touchpad: Cycled window reverse (Alt+Shift+Esc)')
+            except Exception as e:
+                logging.error('Error sending alt+shift+esc: %s', e)
+        threading.Thread(target=_send, daemon=True, name='touchpad-reverse').start()
+
+    _touchpad_ctrl_down = False
+    _touchpad_shift_down = False
+    _last_touchpad_time = 0.0
+
+    def _touchpad_lowlevel_proc(nCode, wParam, lParam):
+        nonlocal _touchpad_ctrl_down, _touchpad_shift_down, _last_touchpad_time
+        try:
+            if nCode >= 0 and lParam:
+                extra = lParam.contents.dwExtraInfo
+                # Ignore keystrokes generated by our own app so they never corrupt modifier tracking
+                if extra == MAGIC_EXTRA_INFO:
+                    return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+                vk = lParam.contents.vkCode
+                flags = lParam.contents.flags
+                scan = lParam.contents.scanCode
+                is_down = (wParam in (WM_KEYDOWN, WM_SYSKEYDOWN))
+                is_up = (wParam in (WM_KEYUP, WM_SYSKEYUP))
+
+                # Track modifier keys from user or touchpad
+                if vk in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
+                    _touchpad_ctrl_down = is_down
+                elif vk in (VK_SHIFT, VK_LSHIFT, VK_RSHIFT):
+                    _touchpad_shift_down = is_down
+
+                user32 = ctypes.windll.user32
+                ctrl_active = _touchpad_ctrl_down or bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+
+                # Touchpad injects keys with scanCode=0 or LLKHF_INJECTED (flags & 0x10)
+                is_injected = bool(flags & 0x10) or (scan == 0)
+
+                # Mode 1: Custom shortcut gestures (Ctrl+Shift+F1 / Ctrl+Shift+F2)
+                is_custom_f1 = (vk == VK_F1) and (ctrl_active or is_injected)
+                is_custom_f2 = (vk == VK_F2) and (ctrl_active or is_injected)
+
+                # Mode 2: System media gestures (Previous Track / Next Track)
+                # Windows sends media keys globally to the session without UIPI restrictions,
+                # allowing gestures to work EVEN when Administrator apps (Task Manager, Terminal) have focus!
+                is_media_f1 = (vk == VK_MEDIA_PREV_TRACK) and is_injected
+                is_media_f2 = (vk == VK_MEDIA_NEXT_TRACK) and is_injected
+
+                is_gesture_f1 = is_custom_f1 or is_media_f1
+                is_gesture_f2 = is_custom_f2 or is_media_f2
+
+                if is_gesture_f1 or is_gesture_f2:
+                    if is_down:
+                        now = time.time()
+                        if now - _last_touchpad_time > 0.05:  # 50ms debounce
+                            _last_touchpad_time = now
+                            if is_gesture_f1:
+                                logging.info("Touchpad Hook: Intercepted reverse gesture (vk=0x%X) -> triggering reverse window switch", vk)
+                                _switch_window_reverse()
+                            else:
+                                logging.info("Touchpad Hook: Intercepted forward gesture (vk=0x%X) -> triggering forward window switch", vk)
+                                _switch_window_forward()
+                    # Suppress raw key completely so active app / media player never receives it
+                    return 1
+        except Exception as e:
+            logging.error("Touchpad hook procedure exception: %s", e)
+
+        return ctypes.windll.user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+    # Register native low-level keyboard hook
     try:
-        keyboard.add_hotkey('ctrl+shift+f1', _touchpad_fix_f1, suppress=True)
-        keyboard.add_hotkey('ctrl+shift+f2', _touchpad_fix_f2, suppress=True)
-        logging.info("Registered touchpad gesture hotkeys ctrl+shift+f1 and ctrl+shift+f2 (suppress=True)")
+        _c_hook_proc = HOOKPROC(_touchpad_lowlevel_proc)
+        ctypes.windll.user32.SetWindowsHookExW.argtypes = [
+            ctypes.c_int, HOOKPROC, ctypes.wintypes.HINSTANCE, ctypes.wintypes.DWORD
+        ]
+        ctypes.windll.user32.SetWindowsHookExW.restype = ctypes.wintypes.HHOOK
+        _hook_handle = ctypes.windll.user32.SetWindowsHookExW(WH_KEYBOARD_LL, _c_hook_proc, 0, 0)
+        if _hook_handle:
+            logging.info("Registered native Windows WH_KEYBOARD_LL hook for touchpad gestures (handle=%s)", _hook_handle)
+        else:
+            logging.error("Failed to install native hook: Windows error %s", ctypes.windll.kernel32.GetLastError())
     except Exception as e:
-        logging.error("Failed to register touchpad hotkeys: %s", e)
+        logging.error("Exception setting up native touchpad hook: %s", e)
+
+    # Also register keyboard library hotkeys as fallback
+    try:
+        keyboard.add_hotkey('ctrl+shift+f1', _switch_window_reverse, suppress=True)
+        keyboard.add_hotkey('ctrl+shift+f2', _switch_window_forward, suppress=True)
+        logging.info("Registered fallback touchpad hotkeys ctrl+shift+f1 and ctrl+shift+f2")
+    except Exception as e:
+        logging.debug("Could not register fallback touchpad hotkeys: %s", e)
 
     root.after(100, process_queue)
     root.mainloop()
