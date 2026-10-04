@@ -354,12 +354,8 @@ def main_app():
             pass
 
         time.sleep(0.02)
-        # Attempt Ctrl+C injection via keybd_event and keyboard.send
+        # Inject Ctrl+C via user32.keybd_event
         send_ctrl_c()
-        try:
-            keyboard.send('ctrl+c')
-        except Exception:
-            pass
 
         # Wait up to 500ms for clipboard to receive copied text
         selected_text = ''
