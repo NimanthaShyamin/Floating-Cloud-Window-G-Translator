@@ -7,17 +7,108 @@ import time
 import os
 import sys
 import ctypes
+import ctypes.wintypes
 import pystray
 from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 import configparser
 import queue
 import subprocess
+import logging
+import urllib.request
+import urllib.parse
+import json
+import ssl
+
+def translate_to_sinhala(text: str) -> str:
+    """Translate text to Sinhala with Google client endpoints (dict-chrome-ex, gtx)
+    which are immune to the HTTP 429 scraping block.
+    """
+    text = text.strip()
+    if not text:
+        return ""
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+    }
+    ctx = ssl.create_default_context()
+
+    # Try official Chromium / Chrome extension endpoints first
+    for client in ["dict-chrome-ex", "gtx"]:
+        try:
+            url = f"https://translate.googleapis.com/translate_a/single?client={client}&sl=auto&tl=si&dt=t&q=" + urllib.parse.quote(text)
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                parts = [part[0] for part in data[0] if part and part[0]]
+                res = "".join(parts).strip()
+                if res:
+                    return res
+        except Exception as e:
+            logging.warning("Translation with client '%s' failed: %s", client, e)
+
+    # Fallback to deep_translator
+    try:
+        res = GoogleTranslator(source="auto", target="si").translate(text)
+        if res and res.strip():
+            return res.strip()
+    except Exception as e:
+        logging.warning("deep_translator fallback failed: %s", e)
+
+    raise RuntimeError("Google Translate servers unreachable. Please check your internet connection.")
+
+# ---------------------------------------------------------------------------
+# Windows keystroke injection helpers (uses direct user32.keybd_event)
+# keybd_event has no 64-bit struct padding issues and works reliably across all
+# Windows versions without WinError 87 (ERROR_INVALID_PARAMETER).
+# ---------------------------------------------------------------------------
+KEYEVENTF_KEYUP = 0x0002
+
+def send_ctrl_c():
+    """Inject Ctrl+C reliably using user32.keybd_event."""
+    user32 = ctypes.windll.user32
+    user32.keybd_event(0x11, 0, 0, 0)                # Ctrl DOWN
+    time.sleep(0.01)
+    user32.keybd_event(0x43, 0, 0, 0)                # C DOWN
+    time.sleep(0.01)
+    user32.keybd_event(0x43, 0, KEYEVENTF_KEYUP, 0)  # C UP
+    time.sleep(0.01)
+    user32.keybd_event(0x11, 0, KEYEVENTF_KEYUP, 0)  # Ctrl UP
+
+
+# ---------------------------------------------------------------------------
+# Admin elevation helpers
+# ---------------------------------------------------------------------------
+def is_admin():
+    """Return True if the current process has Administrator privileges."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def elevate():
+    """Re-launch this process elevated via UAC and exit the current process."""
+    if getattr(sys, 'frozen', False):
+        prog = sys.executable
+        params = ' '.join(f'"{a}"' for a in sys.argv[1:])
+    else:
+        prog = sys.executable
+        script = os.path.abspath(sys.argv[0])
+        rest = ' '.join(f'"{a}"' for a in sys.argv[1:])
+        params = f'"{script}" {rest}'
+    ctypes.windll.shell32.ShellExecuteW(None, 'runas', prog, params, None, 1)
+    sys.exit(0)
+
+def get_self_path():
+    """Return the runnable path for this process (works in frozen EXE and source mode)."""
+    if getattr(sys, 'frozen', False):
+        return sys.executable
+    return os.path.abspath(__file__)
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """Get absolute path to resource, works for dev and for PyInstaller."""
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
         base_path = os.path.abspath(".")
@@ -25,66 +116,119 @@ def resource_path(relative_path):
 
 # --- 1. Config Logic ---
 def get_config_path():
-    exe_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
+    exe_dir = os.path.dirname(get_self_path())
     return os.path.join(exe_dir, 'config.ini')
 
 def get_shortcut():
     config = configparser.ConfigParser()
     config_path = get_config_path()
     if os.path.exists(config_path):
-        config.read(config_path)
-        return config.get('Settings', 'hotkey', fallback='menu')
-    return 'menu' # Default fallback
+        try:
+            config.read(config_path, encoding='utf-8')
+            val = config.get('Settings', 'hotkey', fallback='menu').strip().lower()
+            if val:
+                # Validate that keyboard library can parse the hotkey
+                keyboard.parse_hotkey(val)
+                return val
+        except Exception as e:
+            logging.warning("Config hotkey invalid (%s). Falling back to 'menu'", e)
+            return 'menu'
+    return 'menu'
 
 def save_shortcut(hotkey):
     config = configparser.ConfigParser()
     config_path = get_config_path()
     if os.path.exists(config_path):
-        config.read(config_path)
+        try:
+            config.read(config_path, encoding='utf-8')
+        except Exception:
+            pass
     if not config.has_section('Settings'):
         config.add_section('Settings')
-    config.set('Settings', 'hotkey', hotkey)
-    with open(config_path, 'w') as configfile:
+    config.set('Settings', 'hotkey', str(hotkey).strip().lower())
+    with open(config_path, 'w', encoding='utf-8') as configfile:
         config.write(configfile)
 
-# --- 2. Settings GUI (The Key Recorder) ---
+# --- 2. Settings GUI (Key Recorder) ---
 def run_settings_gui():
     root = tk.Tk()
     root.title("Settings - Floating Translator")
-    root.geometry("400x250")
+    root.geometry("420x260")
+    root.resizable(False, False)
     root.attributes("-topmost", True)
     
     current_key = get_shortcut()
     
-    title_lbl = tk.Label(root, text="Translation Shortcut Setup", font=("Arial", 14, "bold"))
-    title_lbl.pack(pady=10)
+    title_lbl = tk.Label(root, text="Translation Shortcut Setup", font=("Segoe UI", 14, "bold"))
+    title_lbl.pack(pady=12)
 
-    status_lbl = tk.Label(root, text=f"Current Shortcut:  [ {current_key} ]", font=("Arial", 11))
-    status_lbl.pack(pady=10)
+    status_lbl = tk.Label(root, text=f"Current Shortcut:  [ {current_key} ]", font=("Segoe UI", 11))
+    status_lbl.pack(pady=6)
+
+    info_lbl = tk.Label(root, text="Click 'Record New Shortcut' and press your desired key or combo\n(e.g., Menu, F1, or Ctrl+Shift+T)", font=("Segoe UI", 9), fg="#555555")
+    info_lbl.pack(pady=4)
 
     def listen_for_shortcut():
-        btn.config(text="Listening... Press your keys now!", state="disabled", bg="yellow")
+        btn.config(text="Listening... Press your keys now!", state="disabled", bg="#fff3cd")
         root.update()
         
-        # This records the exact physical keys pressed!
-        new_shortcut = keyboard.read_hotkey(suppress=False)
-        save_shortcut(new_shortcut)
+        try:
+            new_shortcut = keyboard.read_hotkey(suppress=False)
+        except Exception as e:
+            logging.error("Failed to read hotkey: %s", e)
+            new_shortcut = None
         
-        status_lbl.config(text=f"New Shortcut Saved:  [ {new_shortcut} ]\n\n(App will restart automatically when you close this window)", fg="green")
-        btn.config(text="Close & Restart App", state="normal", bg="lightgray", command=root.destroy)
+        if not new_shortcut or not str(new_shortcut).strip():
+            status_lbl.config(text=f"No key detected. Keeping [ {current_key} ]", fg="red")
+            btn.config(text="Record New Shortcut", state="normal", bg="SystemButtonFace", command=start_listening)
+            return
+            
+        new_shortcut = str(new_shortcut).strip().lower()
+        
+        # Don't save lone modifier keys
+        lone_modifiers = {'ctrl', 'alt', 'shift', 'windows', 'left ctrl', 'right ctrl', 'left alt', 'right alt', 'left shift', 'right shift'}
+        if new_shortcut in lone_modifiers:
+            status_lbl.config(text=f"Cannot use modifier '{new_shortcut}' alone.\nPlease combine it with another key.", fg="red")
+            btn.config(text="Record New Shortcut", state="normal", bg="SystemButtonFace", command=start_listening)
+            return
+            
+        try:
+            keyboard.parse_hotkey(new_shortcut)
+        except Exception as e:
+            status_lbl.config(text=f"Invalid key combination: {e}", fg="red")
+            btn.config(text="Record New Shortcut", state="normal", bg="SystemButtonFace", command=start_listening)
+            return
+
+        save_shortcut(new_shortcut)
+        status_lbl.config(
+            text=f"New Shortcut Saved:  [ {new_shortcut} ]\n\nClose this window to apply changes.",
+            fg="green"
+        )
+        btn.config(text="Close & Apply", state="normal", bg="#d4edda", command=root.destroy)
 
     def start_listening():
         threading.Thread(target=listen_for_shortcut, daemon=True).start()
 
-    btn = tk.Button(root, text="Record New Shortcut", font=("Arial", 12), command=start_listening)
+    btn = tk.Button(root, text="Record New Shortcut", font=("Segoe UI", 11), padx=10, pady=5, command=start_listening)
     btn.pack(pady=15)
     
     root.mainloop()
 
 # --- 3. Main Application Logic ---
 def main_app():
+    log_path = os.path.join(os.path.dirname(get_self_path()), 'translator.log')
+    logging.basicConfig(
+        filename=log_path,
+        level=logging.DEBUG,
+        format='%(asctime)s [%(levelname)s] %(threadName)s — %(message)s',
+        encoding='utf-8',
+        force=True,
+    )
+    logging.info('main_app() started. Admin: %s', is_admin())
+
     hotkey = get_shortcut()
-    q = queue.Queue() 
+    logging.info('Translation hotkey: %s', hotkey)
+    q = queue.Queue()
     root = tk.Tk()
     root.withdraw()
 
@@ -100,16 +244,20 @@ def main_app():
             return image
 
     def open_settings(icon, item):
-        # Open the settings window as a separate process so it doesn't crash the tray
-        subprocess.Popen([sys.executable, "--setup"])
-        quit_app(icon, item) # Close current background app so the new shortcut can take effect
+        """Launch the settings window in a separate process."""
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable, '--setup']
+        else:
+            cmd = [sys.executable, get_self_path(), '--setup']
+        logging.info('Launching settings subprocess: %s', cmd)
+        subprocess.Popen(cmd)
+        quit_app(icon, item)
 
     def quit_app(icon, item):
         icon.stop()
         root.destroy()
         sys.exit()
 
-    # Add Settings to the right-click menu!
     menu = pystray.Menu(
         item('Change Shortcut', open_settings),
         item('Exit', quit_app)
@@ -149,19 +297,15 @@ def main_app():
         screen_width = win.winfo_screenwidth()
         screen_height = win.winfo_screenheight()
 
-        # Default position (bottom-right of cursor)
         pos_x = start_x + 15
         pos_y = start_y + 15
 
-        # If it goes off the right edge, flip it to the left side of the cursor
         if pos_x + win_width > screen_width:
             pos_x = start_x - win_width - 15
 
-        # If it goes off the bottom edge, flip it above the cursor
         if pos_y + win_height > screen_height:
             pos_y = start_y - win_height - 15
             
-        # Extra safety: Ensure it never goes off the top or left edges either
         pos_x = max(0, pos_x)
         pos_y = max(0, pos_y)
 
@@ -195,48 +339,131 @@ def main_app():
         root.after(100, process_queue)
 
     def get_translation():
-        old_clipboard = pyperclip.paste()
-        keyboard.press_and_release('ctrl+c')
-        time.sleep(0.15) 
-        selected_text = pyperclip.paste()
-        if selected_text.strip():
+        try:
+            old_clipboard = pyperclip.paste()
+        except Exception:
+            old_clipboard = ''
+
+        # Allow user a moment to release trigger keys
+        time.sleep(0.05)
+
+        # Clear clipboard to detect fresh copy
+        try:
+            pyperclip.copy('')
+        except Exception:
+            pass
+
+        time.sleep(0.02)
+        # Attempt Ctrl+C injection via keybd_event and keyboard.send
+        send_ctrl_c()
+        try:
+            keyboard.send('ctrl+c')
+        except Exception:
+            pass
+
+        # Wait up to 500ms for clipboard to receive copied text
+        selected_text = ''
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            time.sleep(0.03)
             try:
-                translation = GoogleTranslator(source='auto', target='si').translate(selected_text)
+                candidate = pyperclip.paste()
+                if candidate and candidate.strip():
+                    selected_text = candidate
+                    break
+            except Exception:
+                pass
+
+        logging.debug('Clipboard captured (%d chars): %.80r', len(selected_text), selected_text)
+
+        if selected_text and selected_text.strip():
+            try:
+                translation = translate_to_sinhala(selected_text)
+                logging.info('Translated: %.80r -> %.80r', selected_text, translation)
                 q.put(translation)
             except Exception as e:
+                logging.error('Translation failed: %s', e, exc_info=True)
+                q.put(f"Translation Error:\n{str(e)}")
+
+        # Restore previous clipboard
+        if old_clipboard:
+            try:
+                pyperclip.copy(old_clipboard)
+            except Exception:
                 pass
-        pyperclip.copy(old_clipboard)
 
     def trigger():
-        threading.Thread(target=get_translation, daemon=True).start()
+        threading.Thread(target=get_translation, daemon=True, name='get_translation').start()
 
-    keyboard.add_hotkey(hotkey, trigger, suppress=True)
+    # ---------------------------------------------------------------------------
+    # Register translation hotkey with fallback
+    # ---------------------------------------------------------------------------
+    try:
+        keyboard.add_hotkey(hotkey, trigger, suppress=True)
+        logging.info("Registered translation hotkey: %s (suppress=True)", hotkey)
+    except Exception as e:
+        logging.error("Failed to register hotkey '%s': %s. Falling back to 'menu'", hotkey, e)
+        try:
+            keyboard.add_hotkey('menu', trigger, suppress=True)
+            logging.info("Registered fallback translation hotkey: menu (suppress=True)")
+        except Exception as e2:
+            logging.error("Failed to register fallback hotkey 'menu': %s", e2)
 
-    # ===========================================================================
+    # Also register Ctrl+Shift+T as an alternate shortcut for laptops without a physical Menu key
+    if str(hotkey).lower().strip() != 'ctrl+shift+t':
+        try:
+            keyboard.add_hotkey('ctrl+shift+t', trigger, suppress=True)
+            logging.info("Registered alternate translation hotkey: ctrl+shift+t (suppress=True)")
+        except Exception as e:
+            logging.debug("Could not register alternate hotkey ctrl+shift+t: %s", e)
+
+    # ---------------------------------------------------------------------------
     # WINDOWS TOUCHPAD GESTURE BUG FIX — GLOBAL HOTKEY REMAPPER
     # ---------------------------------------------------------------------------
-    # Important: This application MUST be run with Administrator privileges for
-    # the global keyboard hooks to successfully bypass Windows UIPI restrictions
-    # and function properly.
-    #
-    # These hotkeys intercept dummy key combinations sent by the touchpad gesture
-    # workaround and silently remap them to the real target keystrokes, preventing
-    # the raw dummy keys from leaking through to other applications.
-    #
-    # ctrl+shift+f1  -->  alt+shift+esc   (e.g. cycle windows in reverse)
-    # ctrl+shift+f2  -->  alt+esc         (e.g. cycle windows forward)
-    # ===========================================================================
-
+    # Intercepts touchpad gestures mapped to dummy keys and silently translates them:
+    # ctrl+shift+f1  →  alt+shift+esc   (cycle windows in reverse)
+    # ctrl+shift+f2  →  alt+esc         (cycle windows forward)
+    # ---------------------------------------------------------------------------
     def _touchpad_fix_f1():
-        """Intercept ctrl+shift+f1 and silently send alt+shift+esc instead."""
-        keyboard.send('alt+shift+esc')
+        logging.info('Touchpad fix F1 triggered: remap ctrl+shift+f1 -> alt+shift+esc')
+        def _send():
+            time.sleep(0.02)
+            try:
+                user32 = ctypes.windll.user32
+                user32.keybd_event(0x12, 0, 0, 0)                # Alt DOWN
+                user32.keybd_event(0x10, 0, 0, 0)                # Shift DOWN
+                user32.keybd_event(0x1B, 0, 0, 0)                # Esc DOWN
+                time.sleep(0.02)
+                user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)  # Esc UP
+                user32.keybd_event(0x10, 0, KEYEVENTF_KEYUP, 0)  # Shift UP
+                user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)  # Alt UP
+                logging.debug('Sent alt+shift+esc successfully')
+            except Exception as e:
+                logging.error('Error sending alt+shift+esc: %s', e)
+        threading.Thread(target=_send, daemon=True, name='touchpad-fix-f1').start()
 
     def _touchpad_fix_f2():
-        """Intercept ctrl+shift+f2 and silently send alt+esc instead."""
-        keyboard.send('alt+esc')
+        logging.info('Touchpad fix F2 triggered: remap ctrl+shift+f2 -> alt+esc')
+        def _send():
+            time.sleep(0.02)
+            try:
+                user32 = ctypes.windll.user32
+                user32.keybd_event(0x12, 0, 0, 0)                # Alt DOWN
+                user32.keybd_event(0x1B, 0, 0, 0)                # Esc DOWN
+                time.sleep(0.02)
+                user32.keybd_event(0x1B, 0, KEYEVENTF_KEYUP, 0)  # Esc UP
+                user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, 0)  # Alt UP
+                logging.debug('Sent alt+esc successfully')
+            except Exception as e:
+                logging.error('Error sending alt+esc: %s', e)
+        threading.Thread(target=_send, daemon=True, name='touchpad-fix-f2').start()
 
-    keyboard.add_hotkey('ctrl+shift+f1', _touchpad_fix_f1, suppress=True)
-    keyboard.add_hotkey('ctrl+shift+f2', _touchpad_fix_f2, suppress=True)
+    try:
+        keyboard.add_hotkey('ctrl+shift+f1', _touchpad_fix_f1, suppress=True)
+        keyboard.add_hotkey('ctrl+shift+f2', _touchpad_fix_f2, suppress=True)
+        logging.info("Registered touchpad gesture hotkeys ctrl+shift+f1 and ctrl+shift+f2 (suppress=True)")
+    except Exception as e:
+        logging.error("Failed to register touchpad hotkeys: %s", e)
 
     root.after(100, process_queue)
     root.mainloop()
@@ -246,19 +473,44 @@ if __name__ == "__main__":
     # If launched with --setup, run the GUI and exit.
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         run_settings_gui()
-        # After settings window closes, launch the background app normally!
-        subprocess.Popen([sys.executable])
+        # After settings window closes, re-launch the background app.
+        if getattr(sys, 'frozen', False):
+            subprocess.Popen([sys.executable])
+        else:
+            subprocess.Popen([sys.executable, get_self_path()])
         sys.exit(0)
-        
+
+    # Ensure Administrator privileges before starting.
+    # Global keyboard hooks must run at elevated integrity to intercept keys
+    # from elevated windows (UIPI requirement).
+    if not is_admin():
+        logging.basicConfig(level=logging.DEBUG)
+        logging.warning('Not running as Administrator — attempting UAC elevation.')
+        elevate()
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            'Administrator privileges are required for global keyboard hooks to function.\n\n'
+            'Please re-launch the application and accept the UAC prompt.',
+            'Elevation Required',
+            0x10,
+        )
+        sys.exit(1)
+
     try:
         main_app()
     except Exception as e:
+        logging.critical('main_app() crashed: %s', e, exc_info=True)
         MB_RETRYCANCEL = 5
         MB_ICONERROR = 0x10
-        IDCANCEL = 2
         IDRETRY = 4
-        error_msg = f"The Floating Sinhala Translator has crashed.\nError: {str(e)}\n\nDo you want to relaunch the application?"
-        result = ctypes.windll.user32.MessageBoxW(0, error_msg, "Application Crashed", MB_RETRYCANCEL | MB_ICONERROR)
+        error_msg = (
+            f'The Floating Sinhala Translator has crashed.\n'
+            f'Error: {str(e)}\n\n'
+            f'Do you want to relaunch the application?'
+        )
+        result = ctypes.windll.user32.MessageBoxW(
+            0, error_msg, 'Application Crashed', MB_RETRYCANCEL | MB_ICONERROR
+        )
         if result == IDRETRY:
             os.startfile(sys.executable)
         sys.exit(1)
