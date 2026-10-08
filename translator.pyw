@@ -107,11 +107,22 @@ def get_self_path():
     return os.path.abspath(__file__)
 
 def resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller."""
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
+    """Get absolute path to resource, works for dev, PyInstaller (onedir/onefile), and installed app."""
+    # 1. Try sys._MEIPASS (PyInstaller bundle / _internal dir)
+    if hasattr(sys, '_MEIPASS'):
+        p = os.path.join(sys._MEIPASS, relative_path)
+        if os.path.exists(p):
+            return p
+    # 2. Try directory containing executable or script
+    exe_dir = os.path.dirname(get_self_path())
+    p = os.path.join(exe_dir, relative_path)
+    if os.path.exists(p):
+        return p
+    # 3. Try current working directory
+    p = os.path.abspath(relative_path)
+    if os.path.exists(p):
+        return p
+    base_path = getattr(sys, '_MEIPASS', exe_dir)
     return os.path.join(base_path, relative_path)
 
 # --- 1. Config Logic ---
@@ -156,6 +167,12 @@ def run_settings_gui():
     root.geometry("420x260")
     root.resizable(False, False)
     root.attributes("-topmost", True)
+    icon_p = resource_path('app_icon.ico')
+    if os.path.exists(icon_p):
+        try:
+            root.iconbitmap(icon_p)
+        except Exception:
+            pass
     
     current_key = get_shortcut()
     
@@ -236,13 +253,21 @@ def main_app():
     # System Tray Icon
     def create_tray_image():
         icon_path = resource_path('app_icon.ico')
+        logging.info("Attempting to load system tray icon from: %s", icon_path)
         if os.path.exists(icon_path):
-            return Image.open(icon_path)
-        else:
-            image = Image.new('RGB', (64, 64), color=(20, 20, 20))
-            d = ImageDraw.Draw(image)
-            d.text((15, 20), "SI", fill=(0, 255, 0))
-            return image
+            try:
+                img = Image.open(icon_path)
+                img.load()
+                logging.info("System tray icon loaded successfully from %s", icon_path)
+                return img
+            except Exception as e:
+                logging.error("Failed to load icon from %s: %s", icon_path, e)
+        # Recognizable high-contrast fallback icon if app_icon.ico is missing
+        logging.warning("Using fallback system tray icon")
+        image = Image.new('RGBA', (64, 64), color=(30, 144, 255, 255))
+        d = ImageDraw.Draw(image)
+        d.text((15, 20), "SI", fill=(255, 255, 255))
+        return image
 
     def open_settings(icon, item):
         """Launch the settings window in a separate process."""

@@ -15,15 +15,17 @@ PrivilegesRequired=admin
 [Files]
 Source: "dist\Floating Sinhala Translator\Floating Sinhala Translator.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\Floating Sinhala Translator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "app_icon.ico"; DestDir: "{app}\_internal"; Flags: ignoreversion
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FloatingSinhalaTranslator"; ValueData: """{app}\Floating Sinhala Translator.exe"""; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\Floating Sinhala Translator.exe"; Parameters: "--setup"; Description: "{cm:LaunchProgram,Floating Sinhala Translator}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Floating Sinhala Translator.exe"; Parameters: "--setup"; Description: "{cm:LaunchProgram,Floating Sinhala Translator}"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallRun]
-Filename: "{cmd}"; Parameters: "/c taskkill /f /im ""Floating Sinhala Translator.exe"""; Flags: runhidden
+Filename: "{sys}\cmd.exe"; Parameters: "/c taskkill /f /im ""Floating Sinhala Translator.exe"""; Flags: runhidden; RunOnceId: "KillTranslatorProcess"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
