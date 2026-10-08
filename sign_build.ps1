@@ -1,4 +1,3 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Self-Signed Code Signing Certificate generator and EXE signer for
@@ -23,10 +22,15 @@
     (or the equivalent from the COLLECT spec).
 
     Requires:
-      - Administrator rights (needed to write to the Root cert store).
+      - Administrator rights (optional, needed only to write to LocalMachine Root cert store).
       - signtool.exe is OPTIONAL -- the script falls back to PowerShell's
         native Set-AuthenticodeSignature if the Windows SDK is not installed.
 #>
+
+param(
+    [switch]$ForceNewCert,
+    [string]$FilePath = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -48,11 +52,21 @@ function Write-Step($msg) {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1 -- Create the self-signed certificate
+# Step 1 -- Find or Create the self-signed certificate
 # ---------------------------------------------------------------------------
-Write-Step 'Creating self-signed code signing certificate ...'
+$existingCert = Get-ChildItem 'Cert:\CurrentUser\My' |
+    Where-Object { $_.Subject -match [regex]::Escape($CertSubject) -and $_.NotAfter -gt (Get-Date) } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
 
-$expiry = (Get-Date).AddYears($CertValidYears)
+if ($existingCert -and -not $ForceNewCert) {
+    Write-Step "Reusing existing code signing certificate ..."
+    $cert = $existingCert
+    Write-Host "Certificate thumbprint: $($cert.Thumbprint)" -ForegroundColor Green
+} else {
+    Write-Step 'Creating self-signed code signing certificate ...'
+
+    $expiry = (Get-Date).AddYears($CertValidYears)
 
 $cert = New-SelfSignedCertificate `
     -Subject           $CertSubject `
@@ -105,6 +119,7 @@ $storeRoot.Add($cert)
 $storeRoot.Close()
 
 Write-Host 'Certificate installed in LocalMachine\TrustedPublisher and LocalMachine\Root.' -ForegroundColor Green
+}
 
 # ---------------------------------------------------------------------------
 # Step 5 -- Locate signtool.exe (optional -- we fall back gracefully)
@@ -136,16 +151,19 @@ if ($signtool) {
 # ---------------------------------------------------------------------------
 # Step 5b -- Auto-detect the built EXE under dist\
 # ---------------------------------------------------------------------------
-Write-Step 'Auto-detecting built EXE under dist\ ...'
+if ($FilePath) {
+    $ExePath = (Resolve-Path $FilePath).Path
+} else {
+    Write-Step 'Auto-detecting built EXE under dist\ ...'
 
-# Priority order:
-#  1. COLLECT layout  (Floating Sinhala Translator.spec)
-#  2. One-file layout (translator.spec)
-#  3. Any other *.exe found recursively under dist\
-$candidatePaths = @(
-    (Join-Path $PSScriptRoot 'dist\Floating Sinhala Translator\Floating Sinhala Translator.exe'),
-    (Join-Path $PSScriptRoot 'dist\translator.exe')
-)
+    # Priority order:
+    #  1. COLLECT layout  (Floating Sinhala Translator.spec)
+    #  2. One-file layout (translator.spec)
+    #  3. Any other *.exe found recursively under dist\
+    $candidatePaths = @(
+        (Join-Path $PSScriptRoot 'dist\Floating Sinhala Translator\Floating Sinhala Translator.exe'),
+        (Join-Path $PSScriptRoot 'dist\translator.exe')
+    )
 
 $ExePath = $null
 foreach ($candidate in $candidatePaths) {
@@ -168,6 +186,7 @@ if (-not $ExePath) {
 
 if (-not $ExePath) {
     Write-Error "No EXE found under dist\.`nBuild the project first:`n  pyinstaller 'Floating Sinhala Translator.spec'`n  -- or --`n  pyinstaller translator.spec"
+}
 }
 
 Write-Host "Target EXE: $ExePath" -ForegroundColor Green

@@ -1,6 +1,7 @@
 [Setup]
 AppName=Floating Sinhala Translator
-AppVersion=1.1.0
+AppVersion=2.0.0
+VersionInfoVersion=2.0.0.0
 DefaultDirName={autopf}\FloatingSinhalaTranslator
 DisableProgramGroupPage=yes
 OutputBaseFilename=FloatingTranslator_Setup

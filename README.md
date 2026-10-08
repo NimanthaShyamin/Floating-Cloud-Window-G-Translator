@@ -2,7 +2,7 @@
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)](https://github.com/NimanthaShyamin/Floating-Cloud-Window-G-Translator)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/Release-v1.1.0-brightgreen.svg)](https://github.com/NimanthaShyamin/Floating-Cloud-Window-G-Translator/releases)
+[![Version](https://img.shields.io/badge/Release-v2.0.0-brightgreen.svg)](https://github.com/NimanthaShyamin/Floating-Cloud-Window-G-Translator/releases)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/Code%20Signed-Authenticode%20SHA256-success.svg)](sign_build.ps1)
 

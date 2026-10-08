@@ -20,6 +20,8 @@ import urllib.parse
 import json
 import ssl
 
+__version__ = "2.0.0"
+
 def translate_to_sinhala(text: str) -> str:
     """Translate text to Sinhala with Google client endpoints (dict-chrome-ex, gtx)
     which are immune to the HTTP 429 scraping block.
@@ -163,7 +165,7 @@ def save_shortcut(hotkey):
 # --- 2. Settings GUI (Key Recorder) ---
 def run_settings_gui():
     root = tk.Tk()
-    root.title("Settings - Floating Translator")
+    root.title(f"Settings - Floating Sinhala Translator v{__version__}")
     root.geometry("420x260")
     root.resizable(False, False)
     root.attributes("-topmost", True)
@@ -255,7 +257,7 @@ def main_app():
         encoding='utf-8',
         force=True,
     )
-    logging.info('main_app() started. Admin: %s', is_admin())
+    logging.info('main_app() started. Version: %s, Admin: %s', __version__, is_admin())
 
     hotkey = get_shortcut()
     logging.info('Translation hotkey: %s', hotkey)
@@ -309,7 +311,7 @@ def main_app():
         item('Change Shortcut', open_settings),
         item('Exit', quit_app)
     )
-    tray_icon = pystray.Icon("FloatingTranslator", create_tray_image(), "Floating Sinhala Translator", menu=menu)
+    tray_icon = pystray.Icon("FloatingTranslator", create_tray_image(), f"Floating Sinhala Translator v{__version__}", menu=menu)
     threading.Thread(target=tray_icon.run, daemon=True).start()
 
     # Floating Window Logic
