@@ -30,8 +30,7 @@ Name: "{autodesktop}\Floating Sinhala Translator"; Filename: "{app}\Floating Sin
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "FloatingSinhalaTranslator"; Flags: deletevalue uninsdeletevalue
 
 [Run]
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /TN ""FloatingSinhalaTranslator"" /TR """"{app}\Floating Sinhala Translator.exe"""" /SC ONLOGON /RL HIGHEST /F"; Flags: runhidden; StatusMsg: "Configuring startup task..."
-Filename: "{app}\Floating Sinhala Translator.exe"; Parameters: "--setup"; Description: "{cm:LaunchProgram,Floating Sinhala Translator}"; Flags: nowait postinstall skipifsilent shellexec
+Filename: "{app}\Floating Sinhala Translator.exe"; Parameters: "--setup"; Description: "{cm:LaunchProgram,Floating Sinhala Translator}"; Flags: runascurrentuser nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""FloatingSinhalaTranslator"" /F"; Flags: runhidden; RunOnceId: "DeleteStartupTask"
@@ -51,21 +50,21 @@ begin
   Result := True;
 end;
 
-(* After install, remind the user that the app itself must also run as admin.
-   The auto-start registry entry already launches it normally; users who pin
-   the EXE to the taskbar should right-click → "Run as administrator", or use
-   a scheduled-task launcher set to run with highest privileges. *)
+(* ---------------------------------------------------------------------------
+   Register the elevated Scheduled Task during ssPostInstall.
+   This guarantees taskschd registration completes under the installer's
+   elevated credentials BEFORE any post-install launch occurs.
+   --------------------------------------------------------------------------- *)
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  AppExe: String;
 begin
-  if CurStep = ssDone then
-    MsgBox(
-      'Installation complete!' + #13#10 + #13#10 +
-      'IMPORTANT: Floating Sinhala Translator must be run with ' +
-      'Administrator privileges so that its global keyboard hooks can ' +
-      'bypass Windows UIPI restrictions (required for the touchpad ' +
-      'gesture fix to work correctly).' + #13#10 + #13#10 +
-      'The app has been added to Windows startup. If you encounter any ' +
-      'issues with hotkeys, right-click the EXE and choose ' +
-      '"Run as administrator".',
-      mbInformation, MB_OK);
+  if CurStep = ssPostInstall then
+  begin
+    AppExe := ExpandConstant('"{app}\Floating Sinhala Translator.exe"');
+    Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Create /TN "FloatingSinhalaTranslator" /TR ' + AppExe + ' /SC ONLOGON /RL HIGHEST /F',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;

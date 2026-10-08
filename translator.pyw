@@ -624,6 +624,15 @@ def main_app():
 
 # --- 4. Boot Logic ---
 if __name__ == "__main__":
+    # Ensure Administrator privileges before starting (both --setup and main app).
+    # Global keyboard hooks must run at elevated integrity to intercept keys
+    # from elevated windows (UIPI requirement).
+    if not is_admin():
+        logging.basicConfig(level=logging.DEBUG)
+        logging.warning('Not running as Administrator — attempting UAC elevation.')
+        elevate()
+        sys.exit(0)
+
     # If launched with --setup, run the GUI and exit.
     if len(sys.argv) > 1 and sys.argv[1] == "--setup":
         run_settings_gui()
@@ -633,22 +642,6 @@ if __name__ == "__main__":
         else:
             subprocess.Popen([sys.executable, get_self_path()])
         sys.exit(0)
-
-    # Ensure Administrator privileges before starting.
-    # Global keyboard hooks must run at elevated integrity to intercept keys
-    # from elevated windows (UIPI requirement).
-    if not is_admin():
-        logging.basicConfig(level=logging.DEBUG)
-        logging.warning('Not running as Administrator — attempting UAC elevation.')
-        elevate()
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            'Administrator privileges are required for global keyboard hooks to function.\n\n'
-            'Please re-launch the application and accept the UAC prompt.',
-            'Elevation Required',
-            0x10,
-        )
-        sys.exit(1)
 
     try:
         main_app()
