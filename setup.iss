@@ -11,6 +11,10 @@ SolidCompression=yes
 ; Administrator privileges are REQUIRED so the app can register global keyboard
 ; hooks that bypass Windows UIPI restrictions (needed for the touchpad gesture fix).
 PrivilegesRequired=admin
+UsedUserAreasWarning=no
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 Source: "dist\Floating Sinhala Translator\Floating Sinhala Translator.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -18,13 +22,19 @@ Source: "dist\Floating Sinhala Translator\*"; DestDir: "{app}"; Flags: ignorever
 Source: "app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "app_icon.ico"; DestDir: "{app}\_internal"; Flags: ignoreversion
 
+[Icons]
+Name: "{autoprograms}\Floating Sinhala Translator"; Filename: "{app}\Floating Sinhala Translator.exe"; IconFilename: "{app}\app_icon.ico"
+Name: "{autodesktop}\Floating Sinhala Translator"; Filename: "{app}\Floating Sinhala Translator.exe"; IconFilename: "{app}\app_icon.ico"; Tasks: desktopicon
+
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FloatingSinhalaTranslator"; ValueData: """{app}\Floating Sinhala Translator.exe"""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "FloatingSinhalaTranslator"; Flags: deletevalue uninsdeletevalue
 
 [Run]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /TN ""FloatingSinhalaTranslator"" /TR """"{app}\Floating Sinhala Translator.exe"""" /SC ONLOGON /RL HIGHEST /F"; Flags: runhidden; StatusMsg: "Configuring startup task..."
 Filename: "{app}\Floating Sinhala Translator.exe"; Parameters: "--setup"; Description: "{cm:LaunchProgram,Floating Sinhala Translator}"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""FloatingSinhalaTranslator"" /F"; Flags: runhidden; RunOnceId: "DeleteStartupTask"
 Filename: "{sys}\cmd.exe"; Parameters: "/c taskkill /f /im ""Floating Sinhala Translator.exe"""; Flags: runhidden; RunOnceId: "KillTranslatorProcess"
 
 [UninstallDelete]

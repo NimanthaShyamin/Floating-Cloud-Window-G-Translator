@@ -175,6 +175,17 @@ def run_settings_gui():
             pass
     
     current_key = get_shortcut()
+
+    # Yield window focus to Tkinter window so it gains foreground focus post-install
+    root.update_idletasks()
+    root.lift()
+    root.focus_force()
+    try:
+        hwnd = root.winfo_id()
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    root.after(150, lambda: (root.lift(), root.focus_force()))
     
     title_lbl = tk.Label(root, text="Translation Shortcut Setup", font=("Segoe UI", 14, "bold"))
     title_lbl.pack(pady=12)
@@ -188,6 +199,8 @@ def run_settings_gui():
     def listen_for_shortcut():
         btn.config(text="Listening... Press your keys now!", state="disabled", bg="#fff3cd")
         root.update()
+        # Brief pause to ensure mouse/key release from clicking finishes before hook captures
+        time.sleep(0.15)
         
         try:
             new_shortcut = keyboard.read_hotkey(suppress=False)
@@ -224,6 +237,7 @@ def run_settings_gui():
         btn.config(text="Close & Apply", state="normal", bg="#d4edda", command=root.destroy)
 
     def start_listening():
+        root.focus_force()
         threading.Thread(target=listen_for_shortcut, daemon=True).start()
 
     btn = tk.Button(root, text="Record New Shortcut", font=("Segoe UI", 11), padx=10, pady=5, command=start_listening)
