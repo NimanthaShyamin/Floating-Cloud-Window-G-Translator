@@ -63,9 +63,9 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    AppExe := ExpandConstant('"{app}\Floating Sinhala Translator.exe"');
+    AppExe := ExpandConstant('{app}\Floating Sinhala Translator.exe');
     Exec(ExpandConstant('{sys}\schtasks.exe'),
-      '/Create /TN "FloatingSinhalaTranslator" /TR ' + AppExe + ' /SC ONLOGON /RL HIGHEST /F',
+      '/Create /TN "FloatingSinhalaTranslator" /TR "\"' + AppExe + '\"" /SC ONLOGON /RL HIGHEST /F',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
